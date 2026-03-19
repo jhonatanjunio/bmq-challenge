@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payments Simulation System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cleave.js/1.6.0/cleave.min.js"></script>
+</head>
+<body class="bg-gray-900 min-h-screen p-8">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        function App() {
+            const [idempotencyKey, setIdempotencyKey] = useState('');
+            const [amount, setAmount] = useState('R$ 100,00');
+            const amountRef = React.useRef();
+                useEffect(() => {
+                    if (amountRef.current) {
+                        
+                        new window.Cleave(amountRef.current, {
+                            numeral: true,
+                            numeralThousandsGroupStyle: 'thousand',
+                            numeralDecimalMark: ',',
+                            delimiter: '.',
+                            prefix: 'R$ ',
+                            noImmediatePrefix: true,
+                            rawValueTrimPrefix: true,
+                            numeralDecimalScale: 2,
+                            numeralPositiveOnly: true,
+                            onValueChanged: function(e) {
+                                setAmount(e.target.value);
+                            }
+                        });
+                    }
+                }, []);
+            const [customerId, setCustomerId] = useState('cust_123');
+            const [results, setResults] = useState([]);
+            const [loading, setLoading] = useState(false);
+            const [toasts, setToasts] = useState([]);
+
+            const addToast = (msg, type = 'info') => {
+                setToasts(prev => {
+                    const next = [{ id: Date.now() + Math.random(), msg, type, leaving: false }, ...prev];
+                    return next.slice(0, 5);
+                });
+            };
+            
+            const removeToast = id => {
+                setToasts(prev => prev.map(t => t.id === id ? { ...t, leaving: true } : t));
+                setTimeout(() => {
+                    setToasts(prev => prev.filter(t => t.id !== id));
+                }, 700); // tempo da animação de saída
+            };
+            // Auto-dismiss
+            useEffect(() => {
+                if (toasts.length > 0) {
+                    const timers = toasts.map(t => setTimeout(() => removeToast(t.id), 12000));
+                    return () => timers.forEach(clearTimeout);
+                }
+            }, [toasts]);
+
+            const generateKey = () => {
+                setIdempotencyKey('key-' + Math.random().toString(36).substring(7));
+            };
+
+            useEffect(() => {
+                generateKey();
+            }, []);
+
+            const clearLogs = () => {
+                setResults([]);
+                addToast('Logs limpos!', 'info');
+            };
+
+            const sendPayment = async (isConcurrent = false) => {
+                setLoading(true);
+                const API_URL = 'http://localhost:3000/payments';
+                // Remove máscara e converte para float
+                const rawAmount = typeof amount === 'string' ? amount.replace(/[^\d,\.]/g, '').replace(',', '.') : amount;
+                const payload = { amount: parseFloat(rawAmount), customerId };
+                const headers = {
+                    'Content-Type': 'application/json',
+                    'Idempotency-Key': idempotencyKey
+                };
+
+                if (isConcurrent) {
+                    addToast("🚀 Disparando 3 requisições simultâneas para testar concorrência...", 'info');
+                    // Gera 3 idempotencyKeys, podendo repetir
+                    const keys = [idempotencyKey];
+                    for (let i = 1; i < 3; i++) {
+                        if (Math.random() < 0.5) {
+                            keys.push(keys[Math.floor(Math.random() * keys.length)]);
+                        } else {
+                            keys.push('key-' + Math.random().toString(36).substring(7));
+                        }
+                    }
+                    // Cria logs de carregamento
+                    setResults(prev => [
+                        ...keys.map((key, idx) => ({
+                            status: 'LOADING',
+                            data: null,
+                            type: `CONCORRENTE #${idx + 1}`,
+                            idempotencyKey: key,
+                            loading: true
+                        })),
+                        ...prev
+                    ]);
+                    // Dispara requisições
+                    await Promise.all(keys.map(async (key, idx) => {
+                        const customHeaders = {
+                            ...headers,
+                            'Idempotency-Key': key
+                        };
+                        try {
+                            const response = await fetch(API_URL, { method: 'POST', headers: customHeaders, body: JSON.stringify(payload) });
+                            const data = await response.json();
+                            setResults(prev => {
+                                const index = prev.findIndex(r => r.loading && r.idempotencyKey === key && r.type.includes(`#${idx + 1}`));
+                                if (index !== -1) {
+                                    const updated = [...prev];
+                                    updated[index] = {
+                                        status: response.status,
+                                        data,
+                                        type: `CONCORRENTE #${idx + 1}`,
+                                        idempotencyKey: key,
+                                        loading: false
+                                    };
+                                    return updated;
+                                }
+                                return prev;
+                            });
+                            if (response.status === 400) {
+                                addToast('Falha intencional simulada pelo backend (20% de chance). O erro foi persistido.', 'warning');
+                            }
+                        } catch (error) {
+                            setResults(prev => {
+                                const index = prev.findIndex(r => r.loading && r.idempotencyKey === key && r.type.includes(`#${idx + 1}`));
+                                if (index !== -1) {
+                                    const updated = [...prev];
+                                    updated[index] = {
+                                        status: 'ERROR',
+                                        data: { error: error.message },
+                                        type: `CONCORRENTE #${idx + 1}`,
+                                        idempotencyKey: key,
+                                        loading: false
+                                    };
+                                    return updated;
+                                }
+                                return prev;
+                            });
+                            addToast("Erro de conexão com o backend. Verifique se o servidor está rodando.", 'error');
+                        }
+                    }));
+                    generateKey();
+                    addToast("✅ Concorrência testada! Verifique se os resultados são idênticos.", 'success');
+                } else {
+                    // Cria log de carregamento
+                    setResults(prev => [
+                        {
+                            status: 'LOADING',
+                            data: null,
+                            type: 'ÚNICA',
+                            idempotencyKey,
+                            loading: true
+                        },
+                        ...prev
+                    ]);
+                    try {
+                        const response = await fetch(API_URL, {
+                            method: 'POST',
+                            headers,
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await response.json();
+                        setResults(prev => {
+                            const index = prev.findIndex(r => r.loading && r.type === 'ÚNICA');
+                            if (index !== -1) {
+                                const updated = [...prev];
+                                updated[index] = {
+                                    status: response.status,
+                                    data,
+                                    type: 'ÚNICA',
+                                    idempotencyKey,
+                                    loading: false
+                                };
+                                return updated;
+                            }
+                            return prev;
+                        });
+                        if (response.status === 400) {
+                            addToast("⚠️ Falha intencional simulada pelo backend (20% de chance). O erro foi persistido.", 'warning');
+                        } else {
+                            generateKey();
+                        }
+                    } catch (error) {
+                        setResults(prev => {
+                            const index = prev.findIndex(r => r.loading && r.type === 'ÚNICA');
+                            if (index !== -1) {
+                                const updated = [...prev];
+                                updated[index] = {
+                                    status: 'ERROR',
+                                    data: { error: error.message },
+                                    type: 'ÚNICA',
+                                    idempotencyKey,
+                                    loading: false
+                                };
+                                return updated;
+                            }
+                            return prev;
+                        });
+                        addToast("❌ Erro de conexão com o backend. Verifique se o servidor está rodando.", 'error');
+                    }
+                }
+                setLoading(false);
+            };
+
+            // Agrupa logs por idempotencyKey mostrando apenas o último status
+            const groupedResults = Object.values(
+                results.reduce((acc, log) => {
+                    acc[log.idempotencyKey] = log;
+                    return acc;
+                }, {})
+            );
+
+            return (
+                <div className="max-w-5xl mx-auto">
+                    <header className="mb-8">
+                        <h1 className="text-3xl font-bold text-gray-100">Payments Simulation System</h1>
+                    </header>
+                    
+                    <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-4 items-end w-full max-w-xs sm:max-w-sm md:max-w-md">
+                        {toasts.map((toast, idx) => (
+                            <div
+                                key={toast.id}
+                                className={
+                                    `relative min-w-[280px] max-w-xs w-full px-4 py-3 rounded-lg border flex items-center shadow-lg font-normal text-base transition-all duration-700
+                                    ${toast.type === 'success' ? 'bg-white border-green-400 text-green-700' :
+                                        toast.type === 'error' ? 'bg-white border-red-400 text-red-700' :
+                                        toast.type === 'warning' ? 'bg-white border-yellow-400 text-yellow-700' :
+                                        'bg-white border-blue-400 text-blue-700'}
+                                    ${toast.leaving ? 'animate-toast-out' : 'animate-toast-in'}`
+                                }
+                                style={{
+                                    boxShadow: '0 4px 16px 0 rgba(0,0,0,0.10)',
+                                    marginBottom: idx === toasts.length - 1 ? 0 : 8,
+                                    opacity: 1,
+                                    transform: `translateY(-${idx * 10}px) scale(${1 - idx * 0.04})`,
+                                    zIndex: 50 - idx,
+                                }}
+                            >
+                                <span className="flex-1 text-sm break-words pr-2">{toast.msg}</span>
+                                <button onClick={() => removeToast(toast.id)}
+                                    className="ml-2 w-6 h-6 flex items-center justify-center text-gray-500 hover:text-gray-700 bg-transparent border-none p-0 focus:outline-none"
+                                    style={{lineHeight: '1', fontSize: '1.2rem'}}
+                                    aria-label="Fechar toast"
+                                >
+                                    <span style={{fontWeight: 'bold', fontSize: '1.2rem'}}>×</span>
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        <div className="lg:col-span-1 space-y-6">
+                            <div className="bg-gray-800 p-6 rounded-lg shadow-md">
+                                <h2 className="text-xl font-semibold mb-4 flex items-center text-white">
+                                    <span className="mr-2">⚙️</span> Configuração
+                                </h2>
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-200">Idempotency-Key</label>
+                                        <div className="flex gap-2 mt-1">
+                                            <input type="text" value={idempotencyKey} onChange={e => setIdempotencyKey(e.target.value)} className="flex-1 border rounded p-2 bg-gray-50 text-sm font-mono" />
+                                            <button onClick={generateKey} className="bg-gray-200 text-gray-700 px-3 py-1 rounded hover:bg-gray-300 text-sm">Novo</button>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-200">Valor (Amount)</label>
+                                        <input
+                                            type="text"
+                                            ref={amountRef}
+                                            value={amount}
+                                            onChange={e => setAmount(e.target.value)}
+                                            className="w-full border rounded p-2 mt-1 font-mono"
+                                            inputMode="decimal"
+                                            placeholder="R$ 0,00"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-200">ID do Cliente</label>
+                                        <input type="text" value={customerId} onChange={e => setCustomerId(e.target.value)} className="w-full border rounded p-2 mt-1" />
+                                    </div>
+                                    <div className="flex flex-col gap-3 pt-4">
+                                        <button onClick={() => sendPayment(false)} className="bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 transition-colors">
+                                            {loading ? 'Processando...' : 'Enviar Pagamento'}
+                                        </button>
+                                        <button onClick={() => sendPayment(true)} className="bg-purple-600 text-white py-2 rounded font-bold hover:bg-purple-700 transition-colors">
+                                            Simular Concorrência (3x)
+                                        </button>
+                                        <button onClick={clearLogs} className="bg-gray-700 text-gray-200 py-2 rounded font-bold hover:bg-gray-600 transition-colors">
+                                            Limpar Logs
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bg-gray-800 p-6 rounded-lg shadow-md">
+                                <h3 className="text-lg font-bold mb-2 text-blue-300">Dicas de Teste:</h3>
+                                <ul className="text-sm space-y-2 text-gray-200">
+                                    <li>• Clique em <strong className="text-blue-400">Enviar Pagamento</strong> e depois em <strong className="text-blue-400">Enviar Pagamento</strong> novamente (mesma chave) para ver o replay.</li>
+                                    <li>• Use <strong className="text-purple-400">Simular Concorrência</strong> para ver o bloqueio de linha em ação.</li>
+                                    <li>• Altere o <strong className="text-yellow-300">Valor</strong> sem mudar a chave para ver o erro 409 (Conflito).</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div className="lg:col-span-2 bg-gray-800 p-6 rounded-lg shadow-md">
+                            <h2 className="text-xl font-semibold mb-4 flex items-center text-gray-100">
+                                <span className="mr-2">📜</span> Logs de Resposta
+                            </h2>
+                            <div className="space-y-4 max-h-[650px] overflow-y-auto pr-2">
+                                {results.length === 0 && (
+                                    <div className="text-center py-20 text-gray-400">
+                                        <p className="text-4xl mb-4">📡</p>
+                                        <p>Nenhuma requisição enviada ainda.</p>
+                                    </div>
+                                )}
+                                {results.map((res, i) => (
+                                    <div key={i} className={`p-4 rounded-lg border-l-8 shadow-sm transition-all
+                                        ${res.loading ? 'border-blue-500 bg-blue-50 animate-pulse' :
+                                            res.status === 202 || (res.data && res.data.status === 'PENDING') ? 'border-yellow-500 bg-yellow-50' :
+                                            res.status >= 200 && res.status < 300 ? 'border-green-500 bg-green-50' :
+                                            res.status === 'ERROR' ? 'border-orange-500 bg-orange-50' : 'border-red-500 bg-red-50'}`}
+                                    >
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-xs font-black uppercase tracking-wider text-gray-500">{res.type} <span className="ml-2 text-xs font-mono text-gray-700">{res.idempotencyKey}</span></span>
+                                            <span className={`px-2 py-1 rounded text-xs font-bold
+                                                ${res.loading ? 'bg-blue-200 text-blue-800' :
+                                                    res.status === 202 || (res.data && res.data.status === 'PENDING') ? 'bg-yellow-200 text-yellow-800' :
+                                                    res.status >= 200 && res.status < 300 ? 'bg-green-200 text-green-800' :
+                                                    res.status === 'ERROR' ? 'bg-orange-200 text-orange-800' : 'bg-red-200 text-red-800'}`}
+                                            >
+                                                {res.loading ? 'Carregando...' : res.status === 202 || (res.data && res.data.status === 'PENDING') ? 'PENDING' : `HTTP ${res.status}`}
+                                            </span>
+                                        </div>
+                                        {res.loading ? (
+                                            <div className="flex items-center gap-2">
+                                                <svg className="animate-spin h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                                                </svg>
+                                                <span className="text-sm text-blue-700 font-semibold">Aguardando resposta do backend...</span>
+                                            </div>
+                                        ) : (
+                                            <pre className="text-xs font-mono bg-white p-3 rounded border border-gray-200 overflow-x-auto">
+                                                {JSON.stringify(res.data, null, 2)}
+                                            </pre>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+
+    <style>
+    @keyframes toast-in {
+        0% { opacity: 0; transform: translateY(40px) scale(0.95); }
+        100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes toast-out {
+        0% { opacity: 1; transform: translateY(0) scale(1); }
+        100% { opacity: 0; transform: translateY(40px) scale(0.95); }
+    }
+    .animate-toast-in {
+        animation: toast-in 0.7s cubic-bezier(.4,0,.2,1);
+    }
+    .animate-toast-out {
+        animation: toast-out 0.7s cubic-bezier(.4,0,.2,1);
+    }
+    </style>
+        </script>
+</body>
+</html>
