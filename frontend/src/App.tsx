@@ -237,20 +237,6 @@ export function App() {
             >
               <Icon.Logs /> Observabilidade
             </button>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <div
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: '50%',
-                  background: '#22c55e',
-                  boxShadow: '0 0 6px #22c55e',
-                }}
-              />
-              <span style={{ fontSize: '0.68rem', color: '#4b5563' }}>
-                {(import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1/payments').replace(/^https?:\/\//, '').replace(/\/.*$/, '')}
-              </span>
-            </div>
           </div>
         </header>
 

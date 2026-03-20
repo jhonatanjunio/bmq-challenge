@@ -1,5 +1,6 @@
 /* Painel lateral de configuração dos parâmetros do pagamento */
 
+import { useState } from 'react';
 import { Icon } from './icons';
 import { AmountInput } from './AmountInput';
 import { generateKey } from '../utils/format';
@@ -17,6 +18,44 @@ interface ConfigPanelProps {
   onSendPayment: () => void;
   onSendConcurrent: () => void;
   onClearLogs: () => void;
+}
+
+/* Label do campo valor com ícone informativo sobre conversão em centavos */
+function AmountLabel() {
+  const [showInfo, setShowInfo] = useState(false);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, position: 'relative' }}>
+      <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        Valor
+      </span>
+      <button
+        onClick={() => setShowInfo((s) => !s)}
+        onBlur={() => setShowInfo(false)}
+        style={{
+          width: 16, height: 16, borderRadius: '50%', border: '1px solid #374151',
+          background: showInfo ? '#1e2130' : 'transparent', color: '#4b5563',
+          fontSize: '0.6rem', fontWeight: 700, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+        title="Informações sobre o valor"
+      >
+        i
+      </button>
+      {showInfo && (
+        <div style={{
+          position: 'absolute', top: 22, left: 0, zIndex: 10,
+          background: '#1e2130', border: '1px solid #2d3348', borderRadius: 6,
+          padding: '8px 12px', width: 260, boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+        }}>
+          <p style={{ margin: 0, fontSize: '0.7rem', color: '#94a3b8', lineHeight: 1.5 }}>
+            O valor informado em reais é convertido automaticamente para <strong style={{ color: '#60a5fa' }}>centavos</strong> antes
+            de ser enviado ao backend (ex: R$ 100,50 = 10050). Este é o padrão utilizado por Stripe, PagBank e outros processadores de pagamento
+            para evitar erros de precisão com ponto flutuante (IEEE 754).
+          </p>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ConfigPanel({
@@ -111,19 +150,7 @@ export function ConfigPanel({
 
           {/* Campo Valor */}
           <div>
-            <label
-              style={{
-                display: 'block',
-                fontSize: '0.72rem',
-                fontWeight: 600,
-                color: '#6b7280',
-                marginBottom: 6,
-                textTransform: 'uppercase',
-                letterSpacing: '0.05em',
-              }}
-            >
-              Valor (Amount)
-            </label>
+            <AmountLabel />
             <AmountInput value={amount} onChange={onAmountChange} />
           </div>
 
