@@ -248,7 +248,7 @@ export function App() {
                 }}
               />
               <span style={{ fontSize: '0.68rem', color: '#4b5563' }}>
-                localhost:3000
+                {(import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1/payments').replace(/^https?:\/\//, '').replace(/\/.*$/, '')}
               </span>
             </div>
           </div>

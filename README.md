@@ -25,7 +25,17 @@ Serviço de pagamentos idempotente com tratamento de concorrência, observabilid
 
 ---
 
-## Como Executar
+## Demo Online
+
+A aplicação está disponível para teste sem necessidade de instalação:
+
+- **Frontend:** https://bmq-challenge-frontend.vercel.app
+- **Backend API:** https://bmq-challenge-backend.vercel.app/api/v1/payments
+- **Health Check:** https://bmq-challenge-backend.vercel.app/health
+
+---
+
+## Como Executar Localmente
 
 O projeto sobe com **um único comando** via Docker Compose:
 
