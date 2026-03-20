@@ -11,7 +11,6 @@ interface ConfigPanelProps {
   onAmountChange: (value: string) => void;
   customerId: string;
   onCustomerIdChange: (id: string) => void;
-  loadingSingle: boolean;
   loadingConcurrent: boolean;
   onSendPayment: () => void;
   onSendConcurrent: () => void;
@@ -25,13 +24,11 @@ export function ConfigPanel({
   onAmountChange,
   customerId,
   onCustomerIdChange,
-  loadingSingle,
   loadingConcurrent,
   onSendPayment,
   onSendConcurrent,
   onClearLogs,
 }: ConfigPanelProps) {
-  const isLoading = loadingSingle || loadingConcurrent;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -135,19 +132,15 @@ export function ConfigPanel({
             <button
               className="btn btn-primary"
               onClick={onSendPayment}
-              disabled={isLoading}
+              disabled={loadingConcurrent}
             >
-              {loadingSingle ? (
-                <><Icon.Spinner /> Processando...</>
-              ) : (
-                <><Icon.Send /> Enviar Pagamento</>
-              )}
+              <Icon.Send /> Enviar Pagamento
             </button>
 
             <button
               className="btn btn-purple"
               onClick={onSendConcurrent}
-              disabled={isLoading}
+              disabled={loadingConcurrent}
             >
               {loadingConcurrent ? (
                 <><Icon.Spinner /> Simulando...</>

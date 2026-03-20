@@ -18,7 +18,6 @@ export function App() {
   const [amount, setAmount] = useState<string>('R$ 100,00');
   const [customerId, setCustomerId] = useState<string>('cust_123');
   const [viewMode, setViewMode] = useState<ViewMode>('chronological');
-  const [loadingSingle, setLoadingSingle] = useState(false);
   const [loadingConcurrent, setLoadingConcurrent] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
 
@@ -34,9 +33,8 @@ export function App() {
     [amount, customerId]
   );
 
-  /* ── Envio de pagamento único ── */
+  /* ── Envio de pagamento único — botão permanece habilitado para demonstrar idempotência ── */
   const sendPayment = async () => {
-    setLoadingSingle(true);
     const payload = buildPayload();
     const key = idempotencyKey;
     const logId = `log-${Date.now()}-${Math.random()}`;
@@ -96,7 +94,6 @@ export function App() {
       addToast('Erro de conexão. Verifique se o servidor está rodando na porta 3000.', 'error');
     }
 
-    setLoadingSingle(false);
   };
 
   /* ── Teste de concorrência com 3 requisições simultâneas ── */
@@ -267,7 +264,6 @@ export function App() {
                 onAmountChange={setAmount}
                 customerId={customerId}
                 onCustomerIdChange={setCustomerId}
-                loadingSingle={loadingSingle}
                 loadingConcurrent={loadingConcurrent}
                 onSendPayment={sendPayment}
                 onSendConcurrent={sendConcurrent}
