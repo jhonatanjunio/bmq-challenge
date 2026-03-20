@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Router } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
@@ -23,12 +23,15 @@ app.use(cors({
 app.use(express.json({ limit: '10kb' }));
 app.use(correlationIdMiddleware);
 
-// Rotas
+// Rotas versionadas
 const paymentController = new PaymentController();
 const logController = new LogController();
 
-app.post('/payments', (req, res) => paymentController.create(req, res));
-app.get('/logs', (req, res) => logController.list(req, res));
+const v1Router = Router();
+v1Router.post('/payments', (req, res) => paymentController.create(req, res));
+v1Router.get('/logs', (req, res) => logController.list(req, res));
+
+app.use('/api/v1', v1Router);
 
 // Health check
 app.get('/health', (req, res) => {

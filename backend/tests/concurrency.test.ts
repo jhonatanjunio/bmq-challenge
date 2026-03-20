@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 
-const API_URL = process.env.API_URL || 'http://localhost:3000';
+const API_URL = process.env.API_URL || 'http://localhost:3000/api/v1';
 
 describe('Payment Service - Testes de Idempotência e Concorrência', () => {
   const customerId = 'cust_789';

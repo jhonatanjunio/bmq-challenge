@@ -28,7 +28,7 @@ interface LogsViewerProps {
   onClose: () => void;
 }
 
-const API_BASE = import.meta.env.VITE_API_URL?.replace('/payments', '') || 'http://localhost:3000';
+const API_BASE = import.meta.env.VITE_API_URL?.replace('/payments', '') || 'http://localhost:3000/api/v1';
 
 const LEVEL_COLORS: Record<string, { bg: string; text: string; dot: string }> = {
   INFO: { bg: 'rgba(59,130,246,0.1)', text: '#60a5fa', dot: '#3b82f6' },
