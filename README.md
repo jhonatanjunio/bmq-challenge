@@ -7,9 +7,9 @@ Serviço de pagamentos idempotente com tratamento de concorrência, observabilid
 - **Idempotência multi-camada:** Quick check sem lock + SHA-256 hash validation + `SELECT FOR UPDATE` (pessimistic locking) + `UNIQUE CONSTRAINT`
 - **Header `X-Idempotent-Replay`:** Indica quando a resposta é um replay idempotente (inspirado na Stripe API)
 - **Amount em centavos (Int):** Padrão da indústria para evitar problemas de ponto flutuante
-- **Observabilidade persistida:** `LoggerService` fire-and-forget com persistência em `AuditLog` + endpoint `GET /logs`
+- **Observabilidade persistida:** `LoggerService` fire-and-forget com persistência em `AuditLog` + endpoint `GET /logs` + página de visualização no frontend
 - **Segurança:** Helmet, CORS restritivo, body size limit, validação de tamanho de inputs
-- **Frontend profissional:** Vite + React 18 + TypeScript + Tailwind CSS com timeline agrupada por chave de idempotência
+- **Frontend profissional:** Vite + React 18 + TypeScript + Tailwind CSS com visualização cronológica e timeline agrupada por chave de idempotência
 - **Graceful shutdown:** Desconexão limpa do banco em `SIGTERM`/`SIGINT`
 
 ---
@@ -22,27 +22,31 @@ O projeto sobe com **um único comando** via Docker Compose:
 docker compose up --build
 ```
 
-Após os logs indicarem que o servidor está rodando, acesse:
+Após os logs indicarem `Payment Service running on port 3000`, acesse:
 
-- **Backend:** http://localhost:3000
 - **Frontend:** http://localhost:8080
+- **Backend API:** http://localhost:3000
 - **Health Check:** http://localhost:3000/health
-- **Logs (API):** http://localhost:3000/logs
 
 ### Execução local (desenvolvimento)
 
 ```bash
-# Backend
+# Terminal 1 — Banco de dados
+docker compose up db
+
+# Terminal 2 — Backend (hot reload)
 cd backend
 npm install
 npx prisma migrate dev
 npm run dev
 
-# Frontend (em outro terminal)
+# Terminal 3 — Frontend (Vite HMR)
 cd frontend
 npm install
 npm run dev
 ```
+
+O frontend Vite roda em `http://localhost:5173` com hot reload. O backend em `http://localhost:3000`.
 
 ---
 
@@ -68,26 +72,33 @@ Os testes cobrem:
 │   ├── src/
 │   │   ├── config/          # PrismaClient singleton
 │   │   ├── controllers/     # PaymentController, LogController
-│   │   ├── middlewares/     # CorrelationId
-│   │   ├── repositories/   # PaymentRepository (FOR UPDATE, ACID)
-│   │   └── services/       # PaymentService, LoggerService
-│   ├── prisma/              # Schema + migrations
-│   └── tests/               # Testes de concorrência
+│   │   ├── middlewares/      # CorrelationId
+│   │   ├── repositories/    # PaymentRepository (FOR UPDATE, ACID)
+│   │   └── services/        # PaymentService, LoggerService
+│   ├── prisma/               # Schema + migrations
+│   └── tests/                # Testes de concorrência
 ├── frontend/
 │   ├── src/
-│   │   ├── components/      # 10 componentes React tipados
-│   │   ├── hooks/           # useToast, useLogs
-│   │   ├── services/        # API client
-│   │   ├── types/           # Interfaces TypeScript
-│   │   └── utils/           # Formatação, status config
-│   └── vite.config.ts       # Vite + Tailwind CSS
-└── docker-compose.yml        # PostgreSQL + Backend + Frontend
+│   │   ├── components/       # 11 componentes React tipados
+│   │   ├── hooks/            # useToast, useLogs
+│   │   ├── services/         # API client
+│   │   ├── types/            # Interfaces TypeScript
+│   │   └── utils/            # Formatação, status config
+│   └── vite.config.ts        # Vite + Tailwind CSS
+└── docker-compose.yml         # PostgreSQL + Backend + Frontend
 ```
 
 ---
 
-## Documentação Adicional
+## Decisões Técnicas
 
-- **[GUIA_TECNICO.md](./GUIA_TECNICO.md)** — Justificativas de decisões técnicas para entrevista
-- **[challenge.md](./challenge.md)** — Requisitos originais do desafio
-- **[DEPLOY_GUIDE.md](./DEPLOY_GUIDE.md)** — Guia de deploy e infraestrutura
+| Decisão | Justificativa |
+|---------|---------------|
+| **Pessimistic Lock (FOR UPDATE)** | Em pagamentos, evitar cobrança dupla é mais importante que throughput |
+| **SHA-256 Request Hash** | Detecta payload diferente com mesma chave (409 Conflict) |
+| **Amount em centavos** | Evita problemas de precisão IEEE 754, padrão Stripe/PagBank |
+| **buildResponseBody centralizado** | Garante respostas idênticas em todos os caminhos (DRY) |
+| **setTimeout para forcePending** | Simula callback assíncrono de gateway; em produção usaria BullMQ/SQS |
+| **LoggerService fire-and-forget** | Observabilidade sem adicionar latência ao processamento |
+| **Helmet + CORS restritivo** | Hardening de segurança cobrindo OWASP Top 10 |
+| **Vite + React + TypeScript** | Frontend moderno com type safety e build otimizado (~60KB gzip) |
