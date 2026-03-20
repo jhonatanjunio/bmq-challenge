@@ -20,6 +20,7 @@ export function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('chronological');
   const [loadingConcurrent, setLoadingConcurrent] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
+  const [keepKey, setKeepKey] = useState(false);
 
   const { toasts, addToast, removeToast } = useToast();
   const { logs, addLog, updateLog, clearLogs, groupedLogs } = useLogs();
@@ -37,6 +38,8 @@ export function App() {
   const sendPayment = async () => {
     const payload = buildPayload();
     const key = idempotencyKey;
+    /* Se "manter chave" estiver desativado, gera nova key imediatamente para o próximo envio */
+    if (!keepKey) setIdempotencyKey(generateKey());
     const logId = `log-${Date.now()}-${Math.random()}`;
 
     addLog({
@@ -81,8 +84,6 @@ export function App() {
         } else {
           addToast('Pagamento processado com sucesso.', 'success');
         }
-        /* Gera nova chave após sucesso para facilitar novos testes */
-        setIdempotencyKey(generateKey());
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -147,8 +148,7 @@ export function App() {
       })
     );
 
-    /* Gera nova chave após concorrência */
-    setIdempotencyKey(generateKey());
+    if (!keepKey) setIdempotencyKey(generateKey());
     addToast(
       'Teste de concorrência concluído. Verifique se todos os resultados são idênticos.',
       'success'
@@ -265,6 +265,8 @@ export function App() {
                 customerId={customerId}
                 onCustomerIdChange={setCustomerId}
                 loadingConcurrent={loadingConcurrent}
+                keepKey={keepKey}
+                onKeepKeyChange={setKeepKey}
                 onSendPayment={sendPayment}
                 onSendConcurrent={sendConcurrent}
                 onClearLogs={handleClearLogs}

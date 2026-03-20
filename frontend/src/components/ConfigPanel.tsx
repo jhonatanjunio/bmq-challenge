@@ -12,6 +12,8 @@ interface ConfigPanelProps {
   customerId: string;
   onCustomerIdChange: (id: string) => void;
   loadingConcurrent: boolean;
+  keepKey: boolean;
+  onKeepKeyChange: (value: boolean) => void;
   onSendPayment: () => void;
   onSendConcurrent: () => void;
   onClearLogs: () => void;
@@ -25,6 +27,8 @@ export function ConfigPanel({
   customerId,
   onCustomerIdChange,
   loadingConcurrent,
+  keepKey,
+  onKeepKeyChange,
   onSendPayment,
   onSendConcurrent,
   onClearLogs,
@@ -84,6 +88,25 @@ export function ConfigPanel({
                 <Icon.RefreshCw /> Novo
               </button>
             </div>
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: '0.7rem',
+                color: '#4b5563',
+                cursor: 'pointer',
+                marginTop: 4,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={keepKey}
+                onChange={(e) => onKeepKeyChange(e.target.checked)}
+                style={{ accentColor: '#3b82f6' }}
+              />
+              Manter chave após envio (para testar replay)
+            </label>
           </div>
 
           {/* Campo Valor */}
