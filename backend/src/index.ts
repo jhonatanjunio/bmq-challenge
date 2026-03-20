@@ -47,7 +47,12 @@ const shutdown = async (signal: string) => {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-// Inicia o servidor
-app.listen(port, () => {
-  console.log(`[Server] Payment Service running on port ${port}`);
-});
+// Inicia o servidor (apenas fora do ambiente serverless)
+if (process.env.VERCEL !== '1') {
+  app.listen(port, () => {
+    console.log(`[Server] Payment Service running on port ${port}`);
+  });
+}
+
+// Exporta o app para ambientes serverless (Vercel)
+export default app;
