@@ -1,0 +1,46 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+model Payment {
+  id               String        @id @default(uuid())
+  idempotencyKey   String        @unique
+  requestHash      String
+  amount           Int           // Valor em centavos (ex: R$ 100,00 = 10000)
+  customerId       String
+  status           PaymentStatus @default(PENDING)
+  responseBody     Json?
+  httpStatusCode   Int?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  processedAt      DateTime?
+
+  @@index([idempotencyKey])
+}
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  timestamp      DateTime @default(now())
+  level          String   // INFO, WARN, ERROR
+  message        String
+  correlationId  String?
+  idempotencyKey String?
+  metadata       Json?
+  source         String?  // controller, service, repository
+
+  @@index([level])
+  @@index([correlationId])
+  @@index([idempotencyKey])
+  @@index([timestamp])
+}
