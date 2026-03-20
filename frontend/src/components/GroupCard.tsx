@@ -48,6 +48,10 @@ export function GroupCard({ groupKey, logs, onCopyKey, collapseSignal, expandSig
         borderLeft: `3px solid ${summaryColor}`,
         borderRadius: 8,
         overflow: 'hidden',
+        maxHeight: collapsed ? 'auto' : 310,
+        display: 'flex',
+        flexDirection: 'column',
+        flexShrink: 0,
       }}
     >
       {/* Cabeçalho do grupo */}
@@ -61,6 +65,7 @@ export function GroupCard({ groupKey, logs, onCopyKey, collapseSignal, expandSig
           borderBottom: collapsed ? 'none' : '1px solid #1e2436',
           cursor: 'pointer',
           padding: '10px 14px',
+          flexShrink: 0,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -116,9 +121,9 @@ export function GroupCard({ groupKey, logs, onCopyKey, collapseSignal, expandSig
         </div>
       </button>
 
-      {/* Conteúdo da timeline com scroll próprio */}
+      {/* Conteúdo da timeline com scroll próprio e altura fixa */}
       {!collapsed && (
-        <div style={{ padding: '10px 14px', maxHeight: 320, overflowY: 'auto' }}>
+        <div style={{ padding: '10px 14px', flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
           {logs.map((log, idx) => (
             <TimelineNode
               key={log.id}
