@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Icon } from './icons';
+import { JsonHighlight } from './JsonHighlight';
 
 interface AuditLog {
   id: string;
@@ -35,6 +36,71 @@ const LEVEL_COLORS: Record<string, { bg: string; text: string; dot: string }> = 
   WARN: { bg: 'rgba(234,179,8,0.1)', text: '#facc15', dot: '#eab308' },
   ERROR: { bg: 'rgba(239,68,68,0.1)', text: '#f87171', dot: '#ef4444' },
 };
+
+/* Linha de log expansível — clique para ver o payload completo */
+function LogRow({ log }: { log: AuditLog }) {
+  const [expanded, setExpanded] = useState(false);
+  const lc = LEVEL_COLORS[log.level] || LEVEL_COLORS.INFO;
+  const time = new Date(log.timestamp).toLocaleTimeString('pt-BR', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const date = new Date(log.timestamp).toLocaleDateString('pt-BR');
+  const hasMetadata = log.metadata && Object.keys(log.metadata).length > 0;
+
+  return (
+    <div
+      style={{
+        background: lc.bg,
+        borderLeft: `3px solid ${lc.dot}`,
+        borderRadius: 5,
+        overflow: 'hidden',
+        cursor: hasMetadata ? 'pointer' : 'default',
+      }}
+      onClick={() => hasMetadata && setExpanded((e) => !e)}
+    >
+      <div style={{ padding: '8px 12px', fontSize: '0.74rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <span style={{ fontSize: '0.6rem', fontWeight: 700, color: lc.text, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            {log.level}
+          </span>
+          <span style={{ color: '#64748b', fontWeight: 500 }}>
+            {log.message}
+          </span>
+          {hasMetadata && (
+            <span style={{ color: '#2d3348', display: 'inline-flex', transition: 'transform 0.15s', transform: expanded ? 'rotate(90deg)' : 'none' }}>
+              <Icon.ChevronRight />
+            </span>
+          )}
+          <span style={{ marginLeft: 'auto', color: '#374151', fontSize: '0.65rem', flexShrink: 0 }}>
+            {date} {time}
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          {log.source && (
+            <span style={{ fontSize: '0.65rem', color: '#4b5563' }}>
+              fonte: <span style={{ color: '#64748b' }}>{log.source}</span>
+            </span>
+          )}
+          {log.idempotencyKey && (
+            <span style={{ fontSize: '0.65rem', color: '#4b5563' }}>
+              key: <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>{log.idempotencyKey}</span>
+            </span>
+          )}
+          {log.correlationId && log.correlationId !== log.idempotencyKey && (
+            <span style={{ fontSize: '0.65rem', color: '#4b5563' }}>
+              correlação: <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>{log.correlationId}</span>
+            </span>
+          )}
+        </div>
+      </div>
+      {expanded && hasMetadata && (
+        <div style={{ padding: '0 12px 10px', maxHeight: 200, overflowY: 'auto' }}>
+          <JsonHighlight data={log.metadata} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function LogsViewer({ onClose }: LogsViewerProps) {
   const [logs, setLogs] = useState<AuditLog[]>([]);
@@ -154,62 +220,9 @@ export function LogsViewer({ onClose }: LogsViewerProps) {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {logs.map((log) => {
-                const lc = LEVEL_COLORS[log.level] || LEVEL_COLORS.INFO;
-                const time = new Date(log.timestamp).toLocaleTimeString('pt-BR', {
-                  hour: '2-digit', minute: '2-digit', second: '2-digit',
-                });
-                const date = new Date(log.timestamp).toLocaleDateString('pt-BR');
-                return (
-                  <div
-                    key={log.id}
-                    style={{
-                      background: lc.bg,
-                      borderLeft: `3px solid ${lc.dot}`,
-                      borderRadius: 5,
-                      padding: '8px 12px',
-                      fontSize: '0.74rem',
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                      <span style={{
-                        fontSize: '0.6rem', fontWeight: 700, color: lc.text,
-                        textTransform: 'uppercase', letterSpacing: '0.05em',
-                      }}>
-                        {log.level}
-                      </span>
-                      <span style={{ color: '#64748b', fontWeight: 500 }}>
-                        {log.message}
-                      </span>
-                      <span style={{ marginLeft: 'auto', color: '#374151', fontSize: '0.65rem', flexShrink: 0 }}>
-                        {date} {time}
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                      {log.source && (
-                        <span style={{ fontSize: '0.65rem', color: '#4b5563' }}>
-                          fonte: <span style={{ color: '#64748b' }}>{log.source}</span>
-                        </span>
-                      )}
-                      {log.idempotencyKey && (
-                        <span style={{ fontSize: '0.65rem', color: '#4b5563' }}>
-                          key: <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>{log.idempotencyKey}</span>
-                        </span>
-                      )}
-                      {log.correlationId && log.correlationId !== log.idempotencyKey && (
-                        <span style={{ fontSize: '0.65rem', color: '#4b5563' }}>
-                          correlação: <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>{log.correlationId}</span>
-                        </span>
-                      )}
-                      {log.metadata && Object.keys(log.metadata).length > 0 && (
-                        <span style={{ fontSize: '0.65rem', color: '#4b5563' }}>
-                          {JSON.stringify(log.metadata)}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+              {logs.map((log) => (
+                <LogRow key={log.id} log={log} />
+              ))}
             </div>
           )}
         </div>

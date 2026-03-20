@@ -188,7 +188,11 @@ export function App() {
             gap: 12,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div
+            style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+            onClick={() => setShowLogs(false)}
+            title="Voltar à página inicial"
+          >
             {/* Ícone do sistema */}
             <div style={{
               width: 36, height: 36, borderRadius: 8,
