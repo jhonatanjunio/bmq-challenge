@@ -137,7 +137,7 @@ Um endpoint de pagamentos é alvo prioritário de ataques. A superfície de ataq
 
 **SQL Injection** — O Prisma parametriza todas as queries automaticamente. A única query raw (`SELECT FOR UPDATE`) usa tagged template literals do Prisma (`$queryRaw\`...\``), que também são parametrizadas — os valores são binding parameters, não interpolação de string.
 
-**Information Leakage** — Respostas de erro retornam mensagens genéricas sem expor stack traces, nomes de tabelas ou lógica interna. Campos como `malicious: true` que existiam nas respostas de validação foram removidos — indicar ao atacante que sua tentativa foi detectada é contraproducente.
+**Information Leakage** — Respostas de erro retornam mensagens genéricas sem expor stack traces, nomes de tabelas ou lógica interna. Indicar ao atacante que sua tentativa foi detectada é contraproducente.
 
 ---
 
