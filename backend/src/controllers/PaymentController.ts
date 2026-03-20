@@ -58,7 +58,7 @@ export class PaymentController {
       logger.info('Payment request received', {
         correlationId,
         idempotencyKey,
-        metadata: { customerId, amountInCents },
+        metadata: { request: { customerId, amount, amountInCents } },
         source: 'controller'
       });
 
@@ -69,7 +69,7 @@ export class PaymentController {
         logger.info('Payment request completed', {
           correlationId,
           idempotencyKey,
-          metadata: { httpStatus: result.status, replay: result.replay },
+          metadata: { httpStatus: result.status, replay: result.replay, response: result.body },
           source: 'controller'
         });
 
