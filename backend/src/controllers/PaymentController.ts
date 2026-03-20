@@ -107,22 +107,10 @@ export class PaymentController {
         return await this.service.processPayment(idempotencyKey, payload);
       } catch (error: any) {
         if (error.code === 'IDEMPOTENCY_CONFLICT' && error.idempotencyKey) {
-          // Conflito de unique constraint — busca registro existente
-          const repo = this.service['repository'];
-          const existing = await repo.findByIdempotencyKey(error.idempotencyKey);
+          // Conflito de unique constraint — busca registro via método público
+          const existing = await this.service.findByKey(error.idempotencyKey);
           if (existing) {
-            if (existing.status !== 'PENDING') {
-              return {
-                status: existing.httpStatusCode || 200,
-                body: existing.responseBody,
-                replay: true
-              };
-            }
-            return {
-              status: 202,
-              body: { status: 'PENDING', message: 'Payment is being processed' },
-              replay: true
-            };
+            return existing;
           }
           lastError = new Error('Idempotency conflict, but no record found');
         } else {

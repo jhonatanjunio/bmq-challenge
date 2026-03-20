@@ -17,6 +17,38 @@ export class PaymentService {
   }
 
   /**
+   * Busca um pagamento pela chave e retorna resposta padronizada.
+   * Usado pelo controller para resolver conflitos de idempotência (P2002).
+   */
+  async findByKey(idempotencyKey: string): Promise<PaymentResult | null> {
+    const existing = await this.repository.findByIdempotencyKey(idempotencyKey);
+    if (!existing) return null;
+
+    if (existing.status !== 'PENDING') {
+      return {
+        status: existing.httpStatusCode || 200,
+        body: this.buildResponseBody(existing),
+        replay: true
+      };
+    }
+    return {
+      status: 202,
+      body: {
+        status: 'PENDING',
+        message: 'Payment is being processed',
+        transaction: {
+          transaction_id: existing.id,
+          customer_id: existing.customerId,
+          amount: existing.amount,
+          created_at: existing.createdAt,
+          updated_at: existing.updatedAt
+        }
+      },
+      replay: true
+    };
+  }
+
+  /**
    * Constrói o body de resposta padronizado a partir de um registro Payment.
    * Centraliza a construção para garantir consistência em todos os caminhos (DRY).
    */
@@ -111,16 +143,15 @@ export class PaymentService {
         setTimeout(async () => {
           try {
             const finalStatus = result.success ? PaymentStatus.SUCCESS : PaymentStatus.FAILED;
+            // Update único e atômico — evita estado parcial
             const updated = await this.repository.update(paymentId, {
               status: finalStatus,
               httpStatusCode: result.success ? 201 : 400,
               processedAt: new Date()
             });
-            // Persiste responseBody completo com dados de transaction
-            await this.repository.update(paymentId, {
-              responseBody: this.buildResponseBody(updated)
-            });
-            logger.info('Async payment processing completed', {
+            // Persiste responseBody em seguida (dados dependem do updatedAt)
+            await this.repository.update(paymentId, { responseBody: this.buildResponseBody(updated) });
+            logger.info('Processamento assíncrono concluído', {
               idempotencyKey,
               metadata: { paymentId, status: finalStatus },
               source: 'service'
