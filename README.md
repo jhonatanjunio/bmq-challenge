@@ -92,6 +92,10 @@ Os testes cobrem:
 
 ## Decisões Técnicas
 
+Para detalhes completos sobre cada decisão arquitetural, trade-offs e evolução para produção, consulte o **[TECHNICAL_DECISIONS.md](./TECHNICAL_DECISIONS.md)**.
+
+### Resumo
+
 | Decisão | Justificativa |
 |---------|---------------|
 | **Pessimistic Lock (FOR UPDATE)** | Em pagamentos, evitar cobrança dupla é mais importante que throughput |
