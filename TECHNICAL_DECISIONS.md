@@ -27,6 +27,8 @@ Dentro de uma transação ACID, executo `SELECT * FROM "Payment" WHERE "idempote
 
 Problema que resolve: duas requisições chegando no mesmo milissegundo, antes que qualquer registro exista no banco. Sem o lock, ambas passariam pelo quick check (vazio), ambas tentariam criar o registro, e uma delas processaria o pagamento em duplicidade.
 
+Dentro da transação com lock, a validação de hash do payload é repetida (dupla validação). Isso garante que mesmo quando duas requests concorrentes com payloads diferentes passam pelo fast-check (ambas recebem `null`), a segunda request detectará o conflito de hash após adquirir o lock. Além disso, se o registro encontrado dentro do lock estiver com status PENDING, o sistema retorna 202 sem reprocessar — evitando processamento duplicado.
+
 A escolha por pessimistic locking (ao invés de optimistic) é deliberada para o domínio financeiro. Optimistic locking (version column + retry) funciona bem para cenários de leitura pesada, mas em pagamentos o custo de um falso positivo (processar duas vezes) é muito maior que o custo de contenção (esperar). Prefiro que a segunda requisição espere 2 segundos a arriscar uma cobrança dupla.
 
 **Camada 4 — UNIQUE CONSTRAINT**
@@ -50,6 +52,9 @@ Todas as operações de escrita ocorrem dentro de `prisma.$transaction()` com ti
 
 O timeout de 10s é calculado com base no delay máximo do processamento síncrono (3s) mais margem para contenção de locks sob carga. Em produção, este valor seria configurável via variável de ambiente.
 
+### Persistência atômica de responseBody
+O `responseBody` (JSON completo da resposta) é persistido na mesma transação que atualiza o status para SUCCESS ou FAILED. Isso garante que não existe janela de inconsistência onde o status é final mas o body ainda não foi salvo. Em replays subsequentes, o body persistido é retornado diretamente — se não estiver disponível (registros antigos), o sistema reconstrói via `buildResponseBody` como fallback.
+
 ### Problema que resolve
 Sem transações, uma falha entre a criação do registro PENDING e a atualização para SUCCESS deixaria um pagamento "fantasma" — processado no gateway mas registrado como pendente. O cliente faria retry, e o gateway cobraria novamente.
 
@@ -68,24 +73,28 @@ Este é o padrão utilizado por Stripe (`amount` em cents), PagBank, Mercado Pag
 
 ---
 
-## 4. Processamento Assíncrono (forcePending)
+## 4. Processamento Assíncrono Durável (PaymentWorker)
 
 ### Contexto
-Gateways de pagamento reais não respondem instantaneamente. Alguns processam em segundos, outros levam mais de 10 segundos (especialmente pagamentos internacionais ou com verificação anti-fraude). O cliente não deve ficar bloqueado esperando.
+Gateways de pagamento reais não respondem instantaneamente. Alguns processam em segundos, outros levam mais de 10 segundos (especialmente pagamentos internacionais ou com verificação anti-fraude). O cliente não deve ficar bloqueado esperando. O mecanismo de processamento assíncrono precisa ser durável — sobreviver a reinícios do processo, suportar múltiplas instâncias e ter retry automático.
 
 ### Decisão
 A simulação tem dois caminhos:
 - **80% das vezes**: Delay de 1-3s, processamento síncrono dentro da transação. O cliente recebe o resultado final.
-- **20% das vezes**: Delay de 10-15s. O sistema retorna HTTP 202 (Accepted) imediatamente com status PENDING e processa em background via `setTimeout`. O cliente pode consultar novamente para obter o resultado final.
+- **20% das vezes**: O sistema retorna HTTP 202 (Accepted) imediatamente com status PENDING. O pagamento é processado em background pelo `PaymentWorker`.
 
-### Evolução para produção
-O `setTimeout` é uma simulação. Em produção, este padrão seria implementado com:
-- **Fila de mensagens** (BullMQ, SQS, RabbitMQ) para processamento assíncrono
-- **Dead-letter queue** para falhas que excedam o limite de retries
-- **Retry exponencial** com backoff para evitar thundering herd
-- **Webhook/callback** para notificar o cliente quando o processamento finalizar
+**PaymentWorker** — serviço de background que roda junto ao servidor:
+- **Fila baseada em PostgreSQL**: Usa `SELECT ... FOR UPDATE SKIP LOCKED` para reclamar pagamentos PENDING sem conflito entre workers concorrentes
+- **Polling configurável**: Intervalo via `WORKER_POLL_INTERVAL_MS` (padrão 2s), batch size via `WORKER_BATCH_SIZE` (padrão 5)
+- **Controle de tentativas**: Campo `attempts` no registro, máximo configurável via `WORKER_MAX_ATTEMPTS` (padrão 3). Pagamentos que excedem o limite permanecem PENDING para investigação manual
+- **Processamento atômico**: Status, httpStatusCode, processedAt e responseBody são atualizados na mesma transação. Se o worker falha no meio, a transação faz rollback e o pagamento volta para a fila no próximo ciclo
+- **Graceful shutdown**: O worker é parado antes da desconexão do banco em SIGTERM/SIGINT
 
-O error handling no callback assíncrono garante que falhas não passem silenciosas — são logadas no AuditLog para investigação.
+### Por que PostgreSQL como fila (e não Redis/BullMQ)
+A infraestrutura já usa PostgreSQL. Adicionar Redis seria um componente a mais para operar, monitorar e manter disponível. Para o volume esperado, `FOR UPDATE SKIP LOCKED` oferece as garantias necessárias (atomicidade, durabilidade, concorrência) sem dependências adicionais. Se o volume crescer além do que o PostgreSQL suporta como fila (~1000 jobs/s), migrar para BullMQ/SQS seria o próximo passo — a interface `GatewaySimulator` e a separação em worker facilitam essa migração.
+
+### Interface GatewaySimulator
+O processamento de gateway é abstraído pela interface `GatewaySimulator`, injetável via construtor do `PaymentService`. Em produção, a implementação padrão (`defaultSimulateGateway`) simula latência e falhas aleatórias. Em testes unitários, uma implementação determinística é injetada — eliminando dependência de `Math.random()` e tornando os testes reproduzíveis.
 
 ---
 
@@ -147,7 +156,7 @@ Um endpoint de pagamentos é alvo prioritário de ataques. A superfície de ataq
 
 **Controller** — Responsável exclusivamente por preocupações HTTP: parsing de headers e body, validação de input, conversão de tipos (amount para centavos), formatação de resposta, e headers de saída. Não contém lógica de negócio.
 
-**Service** — Contém toda a lógica de negócio: idempotência, hashing, orquestração de transações, simulação de gateway. Não conhece HTTP — recebe e retorna objetos tipados.
+**Service** — Contém toda a lógica de negócio: idempotência, hashing, orquestração de transações, simulação de gateway via `GatewaySimulator` injetável. Não conhece HTTP — recebe e retorna objetos tipados. O `PaymentWorker` opera como serviço de background complementar, processando pagamentos PENDING de forma durável.
 
 **Repository** — Abstrai o acesso ao banco de dados. Expõe operações como `findByIdempotencyKeyWithLock`, `create`, `update`. A única camada que conhece Prisma e SQL. Se migrar de PostgreSQL para outro banco, apenas o Repository muda.
 
@@ -200,7 +209,7 @@ O projeto sobe com `docker compose up --build`:
 - **Frontend (Nginx Alpine)** com multi-stage build — instala dependências, faz build do Vite, serve estáticos via Nginx
 
 ### Graceful Shutdown
-Handlers para `SIGTERM` e `SIGINT` desconectam o PrismaClient antes do exit. Em ambientes containerizados, o orquestrador envia SIGTERM antes de encerrar o container. Sem graceful shutdown, conexões com o banco ficam penduradas até o timeout do pool — causando erros em outros containers que compartilham o mesmo banco.
+Handlers para `SIGTERM` e `SIGINT` param o `PaymentWorker` (aguardando ciclo atual finalizar) e desconectam o PrismaClient antes do exit. Em ambientes containerizados, o orquestrador envia SIGTERM antes de encerrar o container. Sem graceful shutdown, o worker poderia estar no meio de um processamento e conexões com o banco ficariam penduradas até o timeout do pool — causando erros em outros containers que compartilham o mesmo banco.
 
 ### OpenSSL no Alpine
 O Prisma requer OpenSSL para comunicação com PostgreSQL. A imagem Alpine não inclui por padrão. Sem `apk add openssl`, o Prisma falha com "Could not parse schema engine response" — um erro críptico que não menciona OpenSSL. Instalamos explicitamente em ambos os stages do Dockerfile.
@@ -209,23 +218,41 @@ O Prisma requer OpenSSL para comunicação com PostgreSQL. A imagem Alpine não 
 
 ## 10. Testes Automatizados
 
-### Abordagem: Testes de integração
-Os testes são de integração — disparam requisições HTTP contra o backend real, validando o comportamento end-to-end incluindo banco de dados, locks, e transações. Esta escolha é deliberada: testes unitários com mocks não conseguem validar comportamento de concorrência e locks de banco de dados, que são o ponto central do sistema.
+### Abordagem: Duas camadas complementares
 
-### Cobertura de cenários
+**Testes unitários (42 testes)** — Validam a lógica do `PaymentService` e `PaymentController` com todas as dependências mockadas. O gateway de pagamento é injetado via interface `GatewaySimulator` com implementação determinística — sem `Math.random()`, sem delays, resultados previsíveis. Isso permite testar cenários críticos de concorrência de forma reproduzível:
+
+- Hash divergente dentro da transação com lock (simula race condition)
+- Pagamento PENDING encontrado dentro da transação não é reprocessado
+- `responseBody` persistido atomicamente na mesma transação
+- Replay usa body persistido quando disponível, com fallback para `buildResponseBody`
+- Validação completa de inputs (header, amount, customerId)
+
+**Testes de integração (7 testes)** — Disparam requisições HTTP contra o backend real, validando o comportamento end-to-end incluindo banco de dados, locks, transações e worker. Complementam os testes unitários validando o que mocks não conseguem: comportamento real do PostgreSQL sob concorrência.
+
+### Cobertura de cenários (integração)
 
 **Teste 1 — Race Condition (10 requisições simultâneas)**
-Dispara 10 requisições em paralelo com a mesma chave. Valida que todas retornam exatamente o mesmo status e body. Este teste exercita as camadas 3 e 4 da idempotência (FOR UPDATE + UNIQUE CONSTRAINT).
+Dispara 10 requisições em paralelo com a mesma chave. Valida que todas retornam exatamente o mesmo status e body. Exercita as camadas 3 e 4 da idempotência (FOR UPDATE + UNIQUE CONSTRAINT).
 
-**Teste 2 — Detecção de conflito de payload (409)**
+**Teste 2 — Detecção de conflito de payload sequencial (409)**
 Envia uma requisição, depois envia outra com mesma chave mas amount diferente. Valida HTTP 409 e mensagem de conflito. Exercita a camada 2 (SHA-256 hash).
 
-**Teste 3 — Persistência de erros**
+**Teste 3 — Detecção de conflito de payload paralelo (409)**
+Envia 10 requisições simultâneas com mesma chave mas payloads divergentes (5 com amount=100, 5 com amount=999). Valida que o conflito é detectado mesmo quando as requests chegam no mesmo milissegundo — exercita a revalidação de hash dentro do lock.
+
+**Teste 4 — Persistência de erros**
 Encontra uma falha intermitente (20% de chance) e reenvia com a mesma chave. Valida que o mesmo erro é retornado — o sistema não tenta reprocessar. Também valida o header `X-Idempotent-Replay: true`.
 
-**Teste 4 — Header X-Idempotent-Replay**
-Envia uma requisição, aguarda processamento, reenvia. Valida que a segunda resposta contém o header de replay. Exercita a camada 1 (quick check) e a detecção de replay.
+**Teste 5 — Header X-Idempotent-Replay**
+Envia uma requisição, aguarda processamento (incluindo worker se PENDING), reenvia. Valida que a segunda resposta contém o header de replay.
+
+**Teste 6 — Ciclo PENDING → resultado final**
+Quando a primeira requisição retorna 202 PENDING, valida que: retries imediatos também retornam 202 com mesmo `transaction_id`; após o worker processar, retorna resultado final (201 ou 400); replays subsequentes retornam exatamente a mesma resposta final com header de replay.
+
+**Teste 7 — Unicidade sob carga (20 requisições)**
+Dispara 20 requisições simultâneas com mesma chave. Valida que exatamente 1 `transaction_id` único é gerado — nenhum pagamento duplicado.
 
 ### Limitações conhecidas
-- Os testes requerem um backend rodando (`npm test` falha sem servidor). Em produção, usaria um setup que sobe o servidor antes dos testes (supertest ou docker-compose em CI).
-- O teste de falha intermitente depende de aleatoriedade (20% por tentativa). Com 20 tentativas, a probabilidade de não encontrar falha é ~1.2%. Em CI, poderia expor um endpoint de teste que força falha.
+- Os testes de integração requerem um backend rodando (`docker compose up`). Em CI, usaria docker-compose para orquestrar o setup completo.
+- O teste de falha intermitente depende de aleatoriedade (20% por tentativa). Com 20 tentativas, a probabilidade de não encontrar falha é ~1.2%. Os testes unitários cobrem este cenário de forma determinística.

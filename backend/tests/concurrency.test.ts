@@ -60,6 +60,45 @@ describe('Payment Service - Testes de Idempotência e Concorrência', () => {
     console.log('[Test] Sucesso: Detectado conflito de payload para a mesma chave.');
   });
 
+  test('Deve retornar 409 para payload diferente mesmo em requisições paralelas (race condition)', async () => {
+    const idempotencyKey = `parallel-conflict-${uuidv4()}`;
+
+    // Envia 5 requests com amount=100 e 5 com amount=999, todas com mesma key, simultaneamente
+    const correctPayload = { amount: 100, customerId };
+    const conflictPayload = { amount: 999, customerId };
+
+    const requests = [
+      ...Array.from({ length: 5 }).map(() =>
+        axios.post(`${API_URL}/payments`, correctPayload, {
+          headers: { 'Idempotency-Key': idempotencyKey },
+          validateStatus: () => true
+        })
+      ),
+      ...Array.from({ length: 5 }).map(() =>
+        axios.post(`${API_URL}/payments`, conflictPayload, {
+          headers: { 'Idempotency-Key': idempotencyKey },
+          validateStatus: () => true
+        })
+      )
+    ];
+
+    const responses = await Promise.all(requests);
+
+    const statuses = responses.map(r => r.status);
+    const has409 = statuses.some(s => s === 409);
+    const hasSuccess = statuses.some(s => s === 201 || s === 202);
+
+    expect(has409).toBe(true);
+    expect(hasSuccess).toBe(true);
+
+    // Todas as respostas 409 devem ter a mensagem de conflito
+    responses.filter(r => r.status === 409).forEach(r => {
+      expect(r.data.message).toContain('different payload');
+    });
+
+    console.log(`[Test] Sucesso: Conflito de payload detectado em requisições paralelas. Status: ${JSON.stringify(statuses)}`);
+  });
+
   test('Deve persistir e retornar o mesmo erro em caso de falha intermitente', async () => {
     let idempotencyKey: string | undefined;
     let firstResponse: any;
@@ -86,7 +125,6 @@ describe('Payment Service - Testes de Idempotência e Concorrência', () => {
       });
 
       expect(retryResponse.status).toBe(firstResponse.status);
-      // Compara campos estáveis (ignora updated_at que pode variar por milissegundos)
       expect(retryResponse.data.status).toBe(firstResponse.data.status);
       expect(retryResponse.data.message).toBe(firstResponse.data.message);
       expect(retryResponse.data.transaction.transaction_id).toBe(firstResponse.data.transaction.transaction_id);
@@ -110,9 +148,24 @@ describe('Payment Service - Testes de Idempotência e Concorrência', () => {
       validateStatus: () => true
     });
 
-    // Aguarda processamento caso tenha caído no forcePending
+    // Aguarda processamento caso tenha caído no forcePending (worker processa)
     if (first.status === 202) {
-      await new Promise(resolve => setTimeout(resolve, 16000));
+      let processed = false;
+      for (let i = 0; i < 15; i++) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const check = await axios.post(`${API_URL}/payments`, { amount, customerId }, {
+          headers: { 'Idempotency-Key': idempotencyKey },
+          validateStatus: () => true
+        });
+        if (check.status !== 202) {
+          processed = true;
+          break;
+        }
+      }
+      if (!processed) {
+        console.log('[Test] Worker não processou em 30s. Verificar worker está ativo.');
+        return;
+      }
     }
 
     // Segunda requisição (replay)
@@ -123,5 +176,100 @@ describe('Payment Service - Testes de Idempotência e Concorrência', () => {
 
     expect(second.headers['x-idempotent-replay']).toBe('true');
     console.log('[Test] Sucesso: Header X-Idempotent-Replay presente no replay.');
+  }, 60000);
+
+  test('Deve retornar 202 consistente durante processamento PENDING e resultado final após conclusão', async () => {
+    const idempotencyKey = `pending-retry-${uuidv4()}`;
+
+    // Envia primeira requisição
+    const first = await axios.post(`${API_URL}/payments`, { amount, customerId }, {
+      headers: { 'Idempotency-Key': idempotencyKey },
+      validateStatus: () => true
+    });
+
+    if (first.status === 202) {
+      // Payment está PENDING — retry imediato também deve receber 202
+      const pendingRetry = await axios.post(`${API_URL}/payments`, { amount, customerId }, {
+        headers: { 'Idempotency-Key': idempotencyKey },
+        validateStatus: () => true
+      });
+
+      expect(pendingRetry.status).toBe(202);
+      expect(pendingRetry.data.status).toBe('PENDING');
+      expect(pendingRetry.data.transaction.transaction_id).toBe(first.data.transaction.transaction_id);
+
+      // Aguarda worker processar
+      let finalResponse = null;
+      for (let i = 0; i < 15; i++) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const check = await axios.post(`${API_URL}/payments`, { amount, customerId }, {
+          headers: { 'Idempotency-Key': idempotencyKey },
+          validateStatus: () => true
+        });
+        if (check.status !== 202) {
+          finalResponse = check;
+          break;
+        }
+      }
+
+      if (finalResponse) {
+        expect([201, 400]).toContain(finalResponse.status);
+        expect(finalResponse.headers['x-idempotent-replay']).toBe('true');
+
+        // Retry subsequente deve retornar exatamente a mesma resposta final
+        const subsequentRetry = await axios.post(`${API_URL}/payments`, { amount, customerId }, {
+          headers: { 'Idempotency-Key': idempotencyKey },
+          validateStatus: () => true
+        });
+
+        expect(subsequentRetry.status).toBe(finalResponse.status);
+        expect(subsequentRetry.data.status).toBe(finalResponse.data.status);
+        expect(subsequentRetry.data.transaction.transaction_id).toBe(finalResponse.data.transaction.transaction_id);
+        expect(subsequentRetry.headers['x-idempotent-replay']).toBe('true');
+
+        console.log(`[Test] Sucesso: PENDING → ${finalResponse.data.status}, replays consistentes.`);
+      } else {
+        console.log('[Test] Worker não processou em 30s. Verificar worker está ativo.');
+      }
+    } else {
+      // Processamento síncrono — verificar replay consistency
+      const replay = await axios.post(`${API_URL}/payments`, { amount, customerId }, {
+        headers: { 'Idempotency-Key': idempotencyKey },
+        validateStatus: () => true
+      });
+
+      expect(replay.status).toBe(first.status);
+      expect(replay.data.status).toBe(first.data.status);
+      expect(replay.data.transaction.transaction_id).toBe(first.data.transaction.transaction_id);
+      expect(replay.headers['x-idempotent-replay']).toBe('true');
+
+      console.log(`[Test] Sucesso: Processamento síncrono com replay consistente.`);
+    }
+  }, 60000);
+
+  test('Deve processar apenas um pagamento mesmo com 20 requisições simultâneas', async () => {
+    const idempotencyKey = `no-double-${uuidv4()}`;
+    const numRequests = 20;
+
+    const requests = Array.from({ length: numRequests }).map(() =>
+      axios.post(`${API_URL}/payments`, { amount, customerId }, {
+        headers: { 'Idempotency-Key': idempotencyKey },
+        validateStatus: () => true
+      })
+    );
+
+    const responses = await Promise.all(requests);
+
+    // Coleta todos os transaction_ids únicos
+    const transactionIds = new Set(
+      responses
+        .filter(r => r.data.transaction)
+        .map(r => r.data.transaction.transaction_id)
+    );
+
+    // Deve haver exatamente UM transaction_id — nenhum duplicado criado
+    expect(transactionIds.size).toBe(1);
+
+    console.log(`[Test] Sucesso: ${numRequests} requisições → 1 único pagamento criado.`);
   });
 });

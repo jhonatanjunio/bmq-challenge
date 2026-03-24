@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { correlationIdMiddleware } from './middlewares/CorrelationId';
 import { PaymentController } from './controllers/PaymentController';
 import { LogController } from './controllers/LogController';
+import { PaymentWorker } from './services/PaymentWorker';
 import { prisma } from './config/database';
 
 dotenv.config();
@@ -38,9 +39,16 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'UP', timestamp: new Date().toISOString() });
 });
 
+// Start background worker for processing PENDING payments
+const worker = new PaymentWorker();
+if (process.env.VERCEL !== '1') {
+  worker.start();
+}
+
 // Graceful shutdown
 const shutdown = async (signal: string) => {
   console.log(`[Server] ${signal} received. Shutting down gracefully...`);
+  await worker.stop();
   await prisma.$disconnect();
   process.exit(0);
 };

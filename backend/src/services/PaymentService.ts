@@ -9,11 +9,17 @@ export interface PaymentResult {
   replay: boolean;
 }
 
+export interface GatewaySimulator {
+  simulate(): Promise<{ delay: number; result: { success: boolean }; forcePending: boolean }>;
+}
+
 export class PaymentService {
   private repository: PaymentRepository;
+  private gateway: GatewaySimulator;
 
-  constructor() {
+  constructor(gateway?: GatewaySimulator) {
     this.repository = new PaymentRepository();
+    this.gateway = gateway || { simulate: () => this.defaultSimulateGateway() };
   }
 
   /**
@@ -27,7 +33,7 @@ export class PaymentService {
     if (existing.status !== 'PENDING') {
       return {
         status: existing.httpStatusCode || 200,
-        body: this.buildResponseBody(existing),
+        body: existing.responseBody || this.buildResponseBody(existing),
         replay: true
       };
     }
@@ -90,7 +96,7 @@ export class PaymentService {
       if (existing.status !== PaymentStatus.PENDING) {
         return {
           status: existing.httpStatusCode || 200,
-          body: this.buildResponseBody(existing),
+          body: existing.responseBody || this.buildResponseBody(existing),
           replay: true
         };
       }
@@ -116,54 +122,64 @@ export class PaymentService {
     return this.repository.transaction(async (tx: Prisma.TransactionClient) => {
       let payment = await this.repository.findByIdempotencyKeyWithLock(idempotencyKey, tx);
 
-      if (!payment) {
-        payment = await this.repository.create({
-          idempotencyKey,
-          requestHash,
-          amount: payload.amount,
-          customerId: payload.customerId,
-          status: PaymentStatus.PENDING
-        }, tx);
-      } else if (payment.status !== PaymentStatus.PENDING) {
-        // Double-check após adquirir o lock
+      if (payment) {
+        // FIX: Revalidar hash DENTRO do lock — duas requests concorrentes com
+        // payloads diferentes podem ambas passar o fast check (ambas recebem null)
+        if (payment.requestHash !== requestHash) {
+          return {
+            status: 409,
+            body: { status: 'ERROR', message: 'Idempotency-Key already used with a different payload' },
+            replay: false
+          };
+        }
+
+        // FIX: Não reprocessar pagamento PENDING — retornar 202
+        if (payment.status === PaymentStatus.PENDING) {
+          return {
+            status: 202,
+            body: {
+              status: 'PENDING',
+              message: 'Payment is being processed',
+              transaction: {
+                transaction_id: payment.id,
+                customer_id: payment.customerId,
+                amount: payment.amount,
+                created_at: payment.createdAt,
+                updated_at: payment.updatedAt
+              }
+            },
+            replay: true
+          };
+        }
+
+        // Já finalizado — retornar resposta persistida
         return {
           status: payment.httpStatusCode || 200,
-          body: this.buildResponseBody(payment),
+          body: payment.responseBody || this.buildResponseBody(payment),
           replay: true
         };
       }
 
+      // Nenhum registro existente — criar PENDING
+      payment = await this.repository.create({
+        idempotencyKey,
+        requestHash,
+        amount: payload.amount,
+        customerId: payload.customerId,
+        status: PaymentStatus.PENDING
+      }, tx);
+
       // 3. Simula processamento externo (Gateway de Pagamento)
-      const { delay, result, forcePending } = await this.simulateGateway();
+      const { result, forcePending } = await this.gateway.simulate();
 
       if (forcePending) {
-        const paymentId = payment.id;
-        // Processa de forma assíncrona — simula callback de gateway
-        // Em produção: substituir por fila (BullMQ/SQS) com dead-letter queue
-        setTimeout(async () => {
-          try {
-            const finalStatus = result.success ? PaymentStatus.SUCCESS : PaymentStatus.FAILED;
-            // Update único e atômico — evita estado parcial
-            const updated = await this.repository.update(paymentId, {
-              status: finalStatus,
-              httpStatusCode: result.success ? 201 : 400,
-              processedAt: new Date()
-            });
-            // Persiste responseBody em seguida (dados dependem do updatedAt)
-            await this.repository.update(paymentId, { responseBody: this.buildResponseBody(updated) });
-            logger.info('Processamento assíncrono concluído', {
-              idempotencyKey,
-              metadata: { paymentId, status: finalStatus },
-              source: 'service'
-            });
-          } catch (error: any) {
-            logger.error('Async payment processing failed', {
-              idempotencyKey,
-              metadata: { paymentId, error: error.message },
-              source: 'service'
-            });
-          }
-        }, delay);
+        // Processamento durável: worker buscará este registro PENDING
+        // Sem setTimeout — pagamento persistido, sobrevive a reinícios
+        logger.info('Payment queued for async processing', {
+          idempotencyKey,
+          metadata: { paymentId: payment.id },
+          source: 'service'
+        });
 
         return {
           status: 202,
@@ -182,20 +198,22 @@ export class PaymentService {
         };
       }
 
-      // Caso normal: aguarda processamento e retorna resultado
+      // Caminho síncrono: processa inline, persiste resposta atomicamente
+      const finalStatus = result.success ? PaymentStatus.SUCCESS : PaymentStatus.FAILED;
+      const httpStatusCode = result.success ? 201 : 400;
+
       const updated = await this.repository.update(payment.id, {
-        status: result.success ? PaymentStatus.SUCCESS : PaymentStatus.FAILED,
-        httpStatusCode: result.success ? 201 : 400,
+        status: finalStatus,
+        httpStatusCode,
         processedAt: new Date()
       }, tx);
+
       const responseBody = this.buildResponseBody(updated);
-      // Persiste o body completo para replays futuros
-      await this.repository.update(payment.id, {
-        responseBody
-      }, tx);
+      // Persiste o body completo na mesma transação para replays futuros
+      await this.repository.update(payment.id, { responseBody }, tx);
 
       return {
-        status: updated.httpStatusCode!,
+        status: httpStatusCode,
         body: responseBody,
         replay: false
       };
@@ -206,7 +224,7 @@ export class PaymentService {
     return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
   }
 
-  private async simulateGateway(): Promise<{ delay: number; result: { success: boolean }; forcePending: boolean }> {
+  private async defaultSimulateGateway(): Promise<{ delay: number; result: { success: boolean }; forcePending: boolean }> {
     let delay;
     let forcePending = false;
     if (Math.random() < 0.2) {

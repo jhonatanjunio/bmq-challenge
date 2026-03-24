@@ -15,13 +15,16 @@ Serviço de pagamentos idempotente com tratamento de concorrência, observabilid
 
 ## Diferenciais Técnicos
 
-- **Idempotência multi-camada:** Quick check sem lock + SHA-256 hash validation + `SELECT FOR UPDATE` (pessimistic locking) + `UNIQUE CONSTRAINT`
+- **Idempotência multi-camada:** Quick check sem lock + SHA-256 hash validation (revalidado dentro do lock) + `SELECT FOR UPDATE` (pessimistic locking) + `UNIQUE CONSTRAINT`
 - **Header `X-Idempotent-Replay`:** Indica quando a resposta é um replay idempotente (inspirado na Stripe API)
+- **Consistência de resposta:** `responseBody` persistido atomicamente na mesma transação, usado em replays para garantir respostas idênticas
+- **Processamento assíncrono durável:** `PaymentWorker` com fila baseada em PostgreSQL (`FOR UPDATE SKIP LOCKED`), retry com controle de tentativas, resistente a reinícios
 - **Amount em centavos (Int):** Padrão da indústria para evitar problemas de ponto flutuante
 - **Observabilidade persistida:** `LoggerService` fire-and-forget com persistência em `AuditLog` + endpoint `GET /logs` + página de visualização no frontend
 - **Segurança:** Helmet, CORS restritivo, body size limit, validação de tamanho de inputs
+- **Gateway injetável:** Interface `GatewaySimulator` permite testes unitários determinísticos sem aleatoriedade
 - **Frontend profissional:** Vite + React 18 + TypeScript + Tailwind CSS com visualização cronológica e timeline agrupada por chave de idempotência
-- **Graceful shutdown:** Desconexão limpa do banco em `SIGTERM`/`SIGINT`
+- **Graceful shutdown:** Desconexão limpa do banco e parada do worker em `SIGTERM`/`SIGINT`
 
 ---
 
@@ -79,10 +82,23 @@ npm install
 npm test
 ```
 
-Os testes cobrem:
-1. **Consistência em concorrência:** 10 requisições simultâneas com a mesma chave — todas devem retornar o mesmo resultado
-2. **Detecção de conflito:** Mesma chave com payload diferente retorna 409
-3. **Persistência de erros:** Falhas intermitentes são persistidas e retornadas em retries
+### Testes unitários (42 testes)
+Cobrem todos os caminhos do `PaymentService` com gateway determinístico (sem aleatoriedade):
+- Revalidação de hash dentro da transação com lock (race condition)
+- Short-circuit de pagamentos PENDING sem reprocessamento
+- Persistência atômica de `responseBody` na mesma transação
+- Replay usando `responseBody` persistido vs. fallback para `buildResponseBody`
+- Validação de input (header, amount, customerId)
+
+### Testes de integração (7 testes)
+Requerem backend rodando (`docker compose up`):
+1. **Race condition (10 requisições simultâneas):** Todas retornam o mesmo resultado
+2. **Detecção de conflito sequencial:** Mesma chave com payload diferente retorna 409
+3. **Detecção de conflito paralelo:** 10 requisições simultâneas com payloads divergentes — detecta 409 mesmo sob concorrência
+4. **Persistência de erros:** Falhas intermitentes são persistidas e retornadas em retries
+5. **Header X-Idempotent-Replay:** Presente em todas as respostas de replay
+6. **Ciclo PENDING → final:** Retry durante PENDING retorna 202 consistente; após worker processar, retorna resultado final idêntico em replays subsequentes
+7. **Unicidade sob carga:** 20 requisições simultâneas geram exatamente 1 pagamento
 
 ---
 
@@ -94,10 +110,10 @@ Os testes cobrem:
 │   │   ├── config/          # PrismaClient singleton
 │   │   ├── controllers/     # PaymentController, LogController
 │   │   ├── middlewares/      # CorrelationId
-│   │   ├── repositories/    # PaymentRepository (FOR UPDATE, ACID)
-│   │   └── services/        # PaymentService, LoggerService
+│   │   ├── repositories/    # PaymentRepository (FOR UPDATE, SKIP LOCKED, ACID)
+│   │   └── services/        # PaymentService, PaymentWorker, LoggerService
 │   ├── prisma/               # Schema + migrations
-│   └── tests/                # Testes de concorrência
+│   └── tests/                # Testes unitários + integração
 ├── frontend/
 │   ├── src/
 │   │   ├── components/       # 11 componentes React tipados
@@ -120,10 +136,11 @@ Para detalhes completos sobre cada decisão arquitetural, trade-offs e evoluçã
 | Decisão | Justificativa |
 |---------|---------------|
 | **Pessimistic Lock (FOR UPDATE)** | Em pagamentos, evitar cobrança dupla é mais importante que throughput |
-| **SHA-256 Request Hash** | Detecta payload diferente com mesma chave (409 Conflict) |
+| **SHA-256 Request Hash (dupla validação)** | Detecta payload diferente com mesma chave (409 Conflict), validado no fast-check e dentro do lock |
 | **Amount em centavos** | Evita problemas de precisão IEEE 754, padrão Stripe/PagBank |
-| **buildResponseBody centralizado** | Garante respostas idênticas em todos os caminhos (DRY) |
-| **setTimeout para forcePending** | Simula callback assíncrono de gateway; em produção usaria BullMQ/SQS |
+| **responseBody persistido** | Garante respostas idênticas em replays — body salvo atomicamente na mesma transação |
+| **PaymentWorker (PostgreSQL queue)** | Processamento assíncrono durável via `FOR UPDATE SKIP LOCKED`, sobrevive a reinícios |
+| **GatewaySimulator injetável** | Permite testes unitários determinísticos sem dependência de aleatoriedade |
 | **LoggerService fire-and-forget** | Observabilidade sem adicionar latência ao processamento |
 | **Helmet + CORS restritivo** | Hardening de segurança cobrindo OWASP Top 10 |
 | **Vite + React + TypeScript** | Frontend moderno com type safety e build otimizado (~60KB gzip) |

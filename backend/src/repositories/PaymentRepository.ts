@@ -77,6 +77,26 @@ export class PaymentRepository {
   }
 
   /**
+   * Claims pending payments for processing using FOR UPDATE SKIP LOCKED.
+   * Prevents concurrent workers from processing the same payment.
+   */
+  async claimPendingPayments(
+    limit: number,
+    maxAttempts: number,
+    tx: Prisma.TransactionClient = prisma
+  ): Promise<Payment[]> {
+    return tx.$queryRaw<Payment[]>`
+      SELECT * FROM "Payment"
+      WHERE "status" = 'PENDING'
+        AND "processedAt" IS NULL
+        AND "attempts" < ${maxAttempts}
+      ORDER BY "createdAt" ASC
+      LIMIT ${limit}
+      FOR UPDATE SKIP LOCKED
+    `;
+  }
+
+  /**
    * Wrapper for native Prisma transactions.
    */
   async transaction<T>(callback: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
